@@ -31,3 +31,10 @@ add
 dtoverlay=aht10
 ```
 
+## access sensor data
+
+```bash
+cat /sys/bus/i2c/devices/2-0038/hwmon/hwmon2/temp1_input
+cat /sys/bus/i2c/devices/2-0038/hwmon/hwmon2/humidity1_input
+```
+
