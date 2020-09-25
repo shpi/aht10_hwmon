@@ -3,7 +3,6 @@
  *
  * Copyright (C) 2020 Lutz Harder, SHPI GmbH
  *
- * 
  */
 
 #include <linux/module.h>
@@ -20,7 +19,6 @@
 
 
 
-
 /* I2C command bytes */
 
 #define AHT10_SOFT_RESET_CMD	0xBA  //soft reset command
@@ -30,16 +28,19 @@
 #define AHT10_INIT_CMD_2	0x00  //function unknown
 
 #define AHT10_MEASURE_CMD	0xAC  //start temperature & humidity, measuring
-				 //playing with this value changes temp & humidity values
-
 #define AHT10_MEASURE_ADC_CMD	0x33  //ADC SETTING 0x00 slow measurement 
-					 //.. 0x33 factory standard .. 
-					 //0xFF quickest measurement, but cap not fully loaded -> to low temp ? 
+				      //.. 0x33 factory standard .. 
+				      //0xFF quickest measurement, but faulty
 #define AHT10_MEASURE_2_CMD	0x00  //function unknown
 
+
+/* AHT10 delays */
+
 #define AHT10_MEASURE_DELAY	80000    //80 milliseconds
-#define AHT10_RESET_DELAY	20000    //less than 20 milliseconds
+#define AHT10_RESET_DELAY	40000    //40 milliseconds
 #define AHT10_INIT_DELAY	10000    //from latest datasheet
+
+/* AHT10 control bit */
 
 #define AHT10_CONTROL_BUSY_SHIFT   7	// Bit 7 of control bit indicates business
 #define AHT10_CONTROL_BUSY_MASK	   0x1  // 1 Bit
@@ -47,8 +48,6 @@
 #define AHT10_CONTROL_CAL_MASK     0x1	// 1 Bit
 #define AHT10_CONTROL_MODE_SHIFT   5	// Bit 5&6 indicates acutal working mode
 #define AHT10_CONTROL_MODE_MASK    0x3  // 2 Bits
-
-
 
 
 /**
@@ -78,7 +77,7 @@ struct aht10 {
  * milli celsius
  * @raw: temperature raw data received from sensor
  */
-static int aht10_temp_raw_to_millicelsius(int raw)
+static inline int aht10_temp_raw_to_millicelsius(int raw)
 {
 	/*
          * Temperature = ((200.0 * (float) raw_temperature) / 1048576.0) - 50.0;  
@@ -94,7 +93,7 @@ static int aht10_temp_raw_to_millicelsius(int raw)
  * one-thousandths of a percent relative humidity
  * @raw: humidity raw received from sensor
  */
-static int aht10_rh_raw_to_per_cent_mille(int raw)
+static inline int aht10_rh_raw_to_per_cent_mille(int raw)
 {
 	/*
 	 * humidity = (float) raw_humidity * 100.0 / 1048576.0;
@@ -111,12 +110,9 @@ static int aht10_rh_raw_to_per_cent_mille(int raw)
  */
 
 
-static int aht10_calibrate(struct device *dev)
+static int aht10_calibrate(struct i2c_client *client)
 {
 	int ret = 0;
-        struct aht10 *aht10 = dev_get_drvdata(dev);
-        struct i2c_client *client = aht10->client;
-
 
 	unsigned char wbuf[3] = {0,};
 
@@ -124,7 +120,6 @@ static int aht10_calibrate(struct device *dev)
 	wbuf[1] = AHT10_INIT_CMD_1;
 	wbuf[2] = AHT10_INIT_CMD_2;
 
-        mutex_lock(&aht10->lock);
 
         ret = i2c_master_send(client, wbuf, 3);
 
@@ -132,9 +127,8 @@ static int aht10_calibrate(struct device *dev)
 		return -EIO;
 
         usleep_range(AHT10_INIT_DELAY, AHT10_INIT_DELAY + 1000);
-	dev_info(&client->dev, "AHT10 calibration loaded.\n");
+	dev_err(&client->dev, "AHT10 calibration loaded.\n");
 
-        mutex_unlock(&aht10->lock);
 
         return ret >= 0 ? 0 : ret;
 
@@ -142,23 +136,19 @@ static int aht10_calibrate(struct device *dev)
 
 
 
-static int aht10_soft_reset(struct device *dev)
+static int aht10_soft_reset(struct i2c_client *client)
 {
         int ret = 0;
-        struct aht10 *aht10 = dev_get_drvdata(dev);
-        struct i2c_client *client = aht10->client;
 	char cmd;
         cmd = AHT10_SOFT_RESET_CMD;
 
-        mutex_lock(&aht10->lock);
         ret = i2c_master_send(client, &cmd, 1);
         if (ret <= 0)
                 return -EIO;
 
         usleep_range(AHT10_RESET_DELAY, AHT10_RESET_DELAY + 1000);
-        dev_info(&client->dev, "AHT10 resetted.\n");
+        dev_err(&client->dev, "AHT10 reset.\n");
 
-        mutex_unlock(&aht10->lock);
 
         return ret >= 0 ? 0 : ret;
 
@@ -200,41 +190,42 @@ static int aht10_update_measurements(struct device *dev)
 
                 if (((rbuf[0] >> AHT10_CONTROL_CAL_SHIFT) & AHT10_CONTROL_CAL_MASK) == 0) 
 		{
-				aht10_calibrate(dev);
+				aht10_calibrate(client);
 				aht10->valid = 0;
 				dev_err(&client->dev, "sensor not calibrated, calibrating...\n");
 				goto out;
 
 		}
 
+
                 if (((rbuf[0] >> AHT10_CONTROL_BUSY_SHIFT) & AHT10_CONTROL_BUSY_MASK) == 0) 
 		{
 				if (!(rbuf[4] == 0x00 && rbuf[5] ==  0x00)) // catch temp errors
 				{
-				aht10->temperature = aht10_temp_raw_to_millicelsius((((rbuf[3] & 0x0F) << 16) | (rbuf[4] << 8) | rbuf[5]));
+					aht10->temperature = aht10_temp_raw_to_millicelsius
+					((((rbuf[3] & 0x0F) << 16) | (rbuf[4] << 8) | rbuf[5]));
 				}
 				else 
 				{
-				dev_err(&client->dev, "temperature reading error, ignoring...\n");
-				aht10->valid = 0;
+					dev_err(&client->dev, "temperature reading error, ignoring...\n");
 				}
 
 				if (!(rbuf[1] == 0x00 && rbuf[2] ==  0x00)) // catch humidity errors
-					aht10->humidity = aht10_rh_raw_to_per_cent_mille((((rbuf[1] << 16) | (rbuf[2] << 8) | rbuf[3]) >> 4));
+					aht10->humidity = aht10_rh_raw_to_per_cent_mille
+					((((rbuf[1] << 16) | (rbuf[2] << 8) | rbuf[3]) >> 4));
 				else 
 				{
-				dev_err(&client->dev, "humidity reading error, ignoring...\n");
-				aht10->valid = 0;
+					dev_err(&client->dev, "humidity reading error, ignoring...\n");
 				}
 				aht10->last_update = jiffies;
 				aht10->valid = 1;
 		} else 
 		{
-		dev_err(&client->dev, "sensor busy, consider increasing measurement delay\n");
+			dev_err(&client->dev, "sensor busy, consider increasing measurement delay\n");
 		}
 	} else  dev_err(&client->dev, "max 1 measurement per 8 seconds, using cache\n");
-out:
 
+out:
 	mutex_unlock(&aht10->lock);
 	return ret >= 0 ? 0 : ret;
 }
@@ -248,6 +239,7 @@ out:
  * Will be called on read access to temp1_input sysfs attribute.
  * Returns number of bytes written into buffer, negative errno on error.
  */
+
 static ssize_t aht10_temperature_show(struct device *dev,
 				      struct device_attribute *attr,
 				      char *buf)
@@ -305,6 +297,7 @@ static int aht10_probe(struct i2c_client *client,
 	struct device *dev = &client->dev;
 	struct device *hwmon_dev;
 	struct aht10 *aht10;
+	int ret = 0;
 
 	if (!i2c_check_functionality(client->adapter,
 				      I2C_FUNC_I2C)) {
@@ -322,9 +315,11 @@ static int aht10_probe(struct i2c_client *client,
 
 	mutex_init(&aht10->lock);
 
+
 	hwmon_dev = devm_hwmon_device_register_with_groups(dev, client->name,
 							   aht10, aht10_groups);
 
+        aht10_calibrate(client);
 
 	return PTR_ERR_OR_ZERO(hwmon_dev);
 }
@@ -339,7 +334,6 @@ MODULE_DEVICE_TABLE(i2c, aht10_id);
 static struct i2c_driver aht10_driver = {
 	.driver.name = "aht10",
 	.probe       = aht10_probe,
-//	.soft_reset  = aht10_soft_reset,
 	.id_table    = aht10_id,
 };
 
