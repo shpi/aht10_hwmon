@@ -36,7 +36,7 @@
 
 /* AHT10 delays */
 
-#define AHT10_MEASURE_DELAY	80000    //80 milliseconds
+#define AHT10_MEASURE_DELAY	120000    //80 milliseconds
 #define AHT10_RESET_DELAY	40000    //40 milliseconds
 #define AHT10_INIT_DELAY	10000    //from latest datasheet
 
@@ -183,6 +183,7 @@ static int aht10_update_measurements(struct device *dev)
 		//ret = i2c_smbus_read_i2c_block_data(client, 0x00, 6, &(rbuf[0]));
 		if (ret <= 0) {
 			dev_err(&client->dev, "i2c_master_recv failed\n");
+                        aht10_soft_reset(client);
 			goto out;
 		}
 
@@ -222,8 +223,9 @@ static int aht10_update_measurements(struct device *dev)
 		} else 
 		{
 			dev_err(&client->dev, "sensor busy, consider increasing measurement delay\n");
+                        aht10_soft_reset(client);
 		}
-	} else  dev_err(&client->dev, "max 1 measurement per 8 seconds, using cache\n");
+	} //else  dev_err(&client->dev, "max 1 measurement per 8 seconds, using cache\n");
 
 out:
 	mutex_unlock(&aht10->lock);
@@ -319,6 +321,7 @@ static int aht10_probe(struct i2c_client *client,
 	hwmon_dev = devm_hwmon_device_register_with_groups(dev, client->name,
 							   aht10, aht10_groups);
 
+        aht10_soft_reset(client);
         aht10_calibrate(client);
 
 	return PTR_ERR_OR_ZERO(hwmon_dev);
